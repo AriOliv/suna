@@ -329,11 +329,16 @@ class Configuration:
     REDIS_MAX_CONNECTIONS: Optional[int] = 300
     REDIS_SSL: Optional[bool] = True
     
-    # Daytona sandbox configuration (optional - sandbox features disabled if not configured)
+    # Sandbox provider selection
+    # "daytona" (default) – Daytona cloud sandboxes (requires DAYTONA_API_KEY)
+    # "docker"            – Local Docker containers (requires Docker daemon, no API key)
+    SANDBOX_PROVIDER: Optional[str] = "daytona"
+
+    # Daytona sandbox configuration (required when SANDBOX_PROVIDER=daytona)
     DAYTONA_API_KEY: Optional[str] = None
     DAYTONA_SERVER_URL: Optional[str] = None
     DAYTONA_TARGET: Optional[str] = None
-    
+
     # Search and other API keys (all optional tools)
     TAVILY_API_KEY: Optional[str] = None
     RAPID_API_KEY: Optional[str] = None

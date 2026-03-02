@@ -5,11 +5,10 @@ from datetime import datetime, timezone
 from typing import Optional, Dict, Any, List
 from dataclasses import dataclass, field
 
-from daytona_sdk import SessionExecuteRequest, SandboxState
-
 from core.utils.logger import logger
 from core.sandbox.pool_config import get_pool_config, SandboxPoolConfig
-from core.sandbox.sandbox import create_sandbox, delete_sandbox, get_or_start_sandbox, daytona
+from core.sandbox.sandbox import create_sandbox, delete_sandbox, get_or_start_sandbox, ping_sandbox
+from core.sandbox.providers.base import SandboxState, get_provider
 from core.sandbox import pool_repo
 
 
@@ -264,20 +263,8 @@ class SandboxPoolService:
     
     async def _ping_sandbox(self, sandbox_id: str) -> bool:
         try:
-            sandbox = await daytona.get(sandbox_id)
-            
-            if sandbox.state != SandboxState.STARTED:
-                logger.debug(f"[SANDBOX_POOL] Sandbox {sandbox_id} not started ({sandbox.state}), skipping ping")
-                return False
-            
-            session_id = f"keepalive_{uuid.uuid4().hex[:8]}"
-            await sandbox.process.create_session(session_id)
-            await sandbox.process.execute_session_command(
-                session_id,
-                SessionExecuteRequest(command=self.KEEPALIVE_COMMAND, var_async=False)
-            )
-            
-            return True
+            result = await ping_sandbox(sandbox_id)
+            return result
         except Exception as e:
             logger.warning(f"[SANDBOX_POOL] Ping failed for {sandbox_id}: {e}")
             return False

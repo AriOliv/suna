@@ -1,10 +1,9 @@
-from typing import Optional, TYPE_CHECKING
+from typing import Any, Optional, TYPE_CHECKING
 
 from core.agentpress.tool import Tool
 
 if TYPE_CHECKING:
     from core.agentpress.thread_manager import ThreadManager
-from daytona_sdk import AsyncSandbox
 from core.sandbox.resolver import resolve_sandbox, SandboxInfo
 from core.utils.logger import logger
 from core.utils.files_utils import clean_path
@@ -12,7 +11,7 @@ from core.utils.files_utils import clean_path
 
 class SandboxToolsBase(Tool):
     _urls_printed = False
-    
+
     def __init__(self, project_id: str, thread_manager: Optional['ThreadManager'] = None):
         super().__init__()
         self.project_id = project_id
@@ -20,7 +19,7 @@ class SandboxToolsBase(Tool):
         self.workspace_path = "/workspace"
         self._sandbox_info: Optional[SandboxInfo] = None
 
-    async def _ensure_sandbox(self) -> AsyncSandbox:
+    async def _ensure_sandbox(self) -> Any:
         if self._sandbox_info is None:
             try:
                 client = await self.thread_manager.db.client
@@ -54,7 +53,7 @@ class SandboxToolsBase(Tool):
         return self._sandbox_info.sandbox
 
     @property
-    def sandbox(self) -> AsyncSandbox:
+    def sandbox(self) -> Any:
         if self._sandbox_info is None:
             raise RuntimeError("Sandbox not initialized. Call _ensure_sandbox() first.")
         return self._sandbox_info.sandbox

@@ -1,6 +1,10 @@
 """
 Step 4: Daytona Configuration
+
+This step is OPTIONAL when SANDBOX_PROVIDER=docker is set.
+It is only required when using the Daytona cloud sandbox provider (default).
 """
+import os
 
 from setup.steps.base import BaseStep, StepResult
 from setup.config.schema import API_PROVIDER_INFO
@@ -8,7 +12,7 @@ from setup.validators.api_keys import validate_api_key
 
 
 class DaytonaStep(BaseStep):
-    """Collect Daytona API key."""
+    """Collect Daytona API key (skipped when SANDBOX_PROVIDER=docker)."""
 
     name = "daytona"
     display_name = "Daytona Configuration"
@@ -16,8 +20,30 @@ class DaytonaStep(BaseStep):
     required = True
     depends_on = ["requirements"]
 
+    def _using_docker_provider(self) -> bool:
+        """Return True if the user has chosen the Docker sandbox provider."""
+        provider = (
+            os.getenv("SANDBOX_PROVIDER")
+            or getattr(getattr(self.config, "general", None), "SANDBOX_PROVIDER", None)
+            or "daytona"
+        )
+        return str(provider).lower() == "docker"
+
     def run(self) -> StepResult:
-        # Check if we already have values configured
+        # Skip entirely when using the Docker provider
+        if self._using_docker_provider():
+            self.info(
+                "SANDBOX_PROVIDER=docker detected – skipping Daytona configuration.\n"
+                "Sandboxes will run as local Docker containers (no API key required).\n"
+                "Make sure Docker is running and the image is available:\n"
+                "   docker pull kortix/suna:0.1.3.30"
+            )
+            return StepResult.ok(
+                "Daytona step skipped (SANDBOX_PROVIDER=docker)",
+                {"daytona": {}},
+            )
+
+        # --- Daytona provider path (unchanged) ---
         has_existing = bool(self.config.daytona.DAYTONA_API_KEY)
 
         if has_existing:
@@ -26,8 +52,9 @@ class DaytonaStep(BaseStep):
             )
         else:
             self.info(
-                "Kortix Suna REQUIRES Daytona for sandboxing functionality. "
-                "Without this key, sandbox features will fail."
+                "Kortix Suna uses Daytona for sandboxing functionality. "
+                "Without this key, sandbox features will fail.\n"
+                "Alternatively, set SANDBOX_PROVIDER=docker in your .env to use local Docker instead."
             )
             self.prompts.press_enter_to_continue(
                 "Press Enter to continue once you have your API key..."
@@ -68,7 +95,7 @@ class DaytonaStep(BaseStep):
         if configured:
             self.success(f"Daytona configured: {', '.join(configured)}")
         else:
-            self.info("Daytona not configured - sandbox features will be disabled.")
+            self.info("Daytona not configured – sandbox features will be disabled.")
 
         self.success("Daytona information saved.")
 
@@ -95,4 +122,6 @@ class DaytonaStep(BaseStep):
         return ["DAYTONA_API_KEY", "DAYTONA_SERVER_URL", "DAYTONA_TARGET"]
 
     def is_complete(self) -> bool:
+        if self._using_docker_provider():
+            return True
         return self.config.daytona.is_complete()

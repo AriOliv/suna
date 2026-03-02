@@ -1,144 +1,160 @@
-from daytona_sdk import AsyncDaytona, DaytonaConfig, CreateSandboxFromSnapshotParams, AsyncSandbox, SessionExecuteRequest, Resources, SandboxState
-from dotenv import load_dotenv
-from core.utils.logger import logger
-from core.utils.config import config
-from core.utils.config import Configuration
+"""
+Sandbox lifecycle functions.
+
+All sandbox operations go through the configured SandboxProvider
+(Daytona by default, Docker for self-hosted deployments).
+
+Set SANDBOX_PROVIDER=docker in your .env to use local Docker instead.
+"""
 import asyncio
+from typing import Any, Optional
+
+from dotenv import load_dotenv
+
+from core.utils.logger import logger
+from core.utils.config import Configuration
+from core.sandbox.providers.base import SandboxState, get_provider
 
 load_dotenv()
 
-# logger.debug("Initializing Daytona sandbox configuration")
-daytona_config = DaytonaConfig(
-    api_key=config.DAYTONA_API_KEY,
-    api_url=config.DAYTONA_SERVER_URL, 
-    target=config.DAYTONA_TARGET,
-)
 
-if daytona_config.api_key:
-    logger.debug("Daytona sandbox configured successfully")
-else:
-    logger.warning("No Daytona API key found in environment variables")
+# ---------------------------------------------------------------------------
+# Provider singleton helpers
+# ---------------------------------------------------------------------------
 
-if daytona_config.api_url:
-    logger.debug(f"Daytona API URL set to: {daytona_config.api_url}")
-else:
-    logger.warning("No Daytona API URL found in environment variables")
+def _provider():
+    """Lazy accessor so the provider is only instantiated on first use."""
+    return get_provider()
 
-if daytona_config.target:
-    logger.debug(f"Daytona target set to: {daytona_config.target}")
-else:
-    logger.warning("No Daytona target found in environment variables")
 
-daytona = AsyncDaytona(daytona_config)
+# ---------------------------------------------------------------------------
+# Public API (same signatures as before – fully backward-compatible)
+# ---------------------------------------------------------------------------
 
-async def get_or_start_sandbox(sandbox_id: str) -> AsyncSandbox:
-    """Retrieve a sandbox by ID, check its state, and start it if needed."""
-    
-    logger.info(f"Getting or starting sandbox with ID: {sandbox_id}")
+async def get_or_start_sandbox(sandbox_id: str) -> Any:
+    """
+    Retrieve a sandbox by ID.  If it is stopped/archived, start it first.
+    """
+    provider = _provider()
+    logger.info(f"[SANDBOX] Getting sandbox: {sandbox_id}")
 
-    try:
-        sandbox = await daytona.get(sandbox_id)
-        
-        # Check if sandbox needs to be started
-        if sandbox.state in [SandboxState.ARCHIVED, SandboxState.STOPPED, SandboxState.ARCHIVING]:
-            logger.info(f"Sandbox is in {sandbox.state} state. Starting...")
-            try:
-                await daytona.start(sandbox)
-                
-                # Wait for sandbox to reach STARTED state
-                for _ in range(30):
-                    await asyncio.sleep(1)
-                    sandbox = await daytona.get(sandbox_id)
-                    if sandbox.state == SandboxState.STARTED:
-                        break
-                
-                # Start supervisord in a session when restarting
-                await start_supervisord_session(sandbox)
-            except Exception as e:
-                logger.error(f"Error starting sandbox: {e}")
-                raise e
-        
-        logger.info(f"Sandbox {sandbox_id} is ready")
-        return sandbox
-        
-    except Exception as e:
-        logger.error(f"Error retrieving or starting sandbox: {str(e)}")
-        raise e
+    sandbox = await provider.get(sandbox_id)
+    state = await provider.get_state(sandbox)
 
-async def start_supervisord_session(sandbox: AsyncSandbox):
-    """Start supervisord in a session."""
+    if state in (SandboxState.ARCHIVED, SandboxState.STOPPED, SandboxState.ARCHIVING):
+        logger.info(f"[SANDBOX] Sandbox {sandbox_id} is {state.value} – starting…")
+        try:
+            await provider.start(sandbox)
+
+            # Wait up to 30 s for STARTED state
+            for _ in range(30):
+                await asyncio.sleep(1)
+                sandbox = await provider.get(sandbox_id)
+                state = await provider.get_state(sandbox)
+                if state == SandboxState.STARTED:
+                    break
+
+            await start_supervisord_session(sandbox)
+        except Exception as exc:
+            logger.error(f"[SANDBOX] Failed to start {sandbox_id}: {exc}")
+            raise
+
+    logger.info(f"[SANDBOX] Sandbox {sandbox_id} is ready")
+    return sandbox
+
+
+async def get_sandbox(sandbox_id: str) -> Any:
+    """
+    Retrieve a sandbox by ID without auto-starting.
+    Useful when you need to inspect state without side effects.
+    """
+    return await _provider().get(sandbox_id)
+
+
+async def get_sandbox_state(sandbox: Any) -> SandboxState:
+    """Return the abstract state of any sandbox object."""
+    return await _provider().get_state(sandbox)
+
+
+async def start_supervisord_session(sandbox: Any) -> None:
+    """
+    Ensure supervisord is running inside the sandbox.
+
+    For Daytona sandboxes this is necessary after a restart.
+    For Docker, supervisord is already the container entrypoint – the call
+    is a no-op that may fail silently (which is expected).
+    """
     session_id = "supervisord-session"
     try:
         await sandbox.process.create_session(session_id)
-        await sandbox.process.execute_session_command(session_id, SessionExecuteRequest(
-            command="exec /usr/bin/supervisord -n -c /etc/supervisor/conf.d/supervisord.conf",
-            var_async=True
-        ))
-        logger.info("Supervisord started successfully")
-    except Exception as e:
-        # Don't fail if supervisord already running
-        logger.warning(f"Could not start supervisord: {str(e)}")
 
-async def create_sandbox(password: str, project_id: str = None) -> AsyncSandbox:
-    """Create a new sandbox with all required services configured and running."""
-    
-    logger.info("Creating new Daytona sandbox environment")
-    # logger.debug("Configuring sandbox with snapshot and environment variables")
-    
-    labels = None
-    if project_id:
-        # logger.debug(f"Using sandbox_id as label: {project_id}")
-        labels = {'id': project_id}
-        
-    params = CreateSandboxFromSnapshotParams(
-        snapshot=Configuration.SANDBOX_SNAPSHOT_NAME,
-        public=True,
-        labels=labels,
-        env_vars={
-            "CHROME_PERSISTENT_SESSION": "true",
-            "RESOLUTION": "1048x768x24",
-            "RESOLUTION_WIDTH": "1048",
-            "RESOLUTION_HEIGHT": "768",
-            "VNC_PASSWORD": password,
-            "ANONYMIZED_TELEMETRY": "false",
-            "CHROME_PATH": "",
-            "CHROME_USER_DATA": "",
-            "CHROME_DEBUGGING_PORT": "9222",
-            "CHROME_DEBUGGING_HOST": "localhost",
-            "CHROME_CDP": ""
-        },
-        # resources=Resources(
-        #     cpu=2,
-        #     memory=4,
-        #     disk=5,
-        # ),
-        auto_stop_interval=15,
-        auto_archive_interval=30,
-    )
-    
-    # Create the sandbox
-    sandbox = await daytona.create(params)
-    logger.info(f"Sandbox created with ID: {sandbox.id}")
-    
-    # Start supervisord in a session for new sandbox
+        # Use a duck-typed request that works with both Daytona SDK and Docker
+        class _Req:
+            command = (
+                "exec /usr/bin/supervisord -n -c "
+                "/etc/supervisor/conf.d/supervisord.conf"
+            )
+            var_async = True
+            cwd = None
+
+        await sandbox.process.execute_session_command(session_id, _Req())
+        logger.info("[SANDBOX] Supervisord session started")
+    except Exception as exc:
+        # Not fatal – supervisord may already be running
+        logger.warning(f"[SANDBOX] Could not start supervisord session: {exc}")
+
+
+async def create_sandbox(password: str, project_id: Optional[str] = None) -> Any:
+    """Create a new sandbox with all required services configured."""
+    provider = _provider()
+    logger.info("[SANDBOX] Creating new sandbox environment")
+
+    sandbox = await provider.create(password, project_id)
+    logger.info(f"[SANDBOX] Sandbox created: {sandbox.id}")
+
     await start_supervisord_session(sandbox)
-    
-    logger.info(f"Sandbox environment successfully initialized")
+    logger.info("[SANDBOX] Sandbox environment initialised")
     return sandbox
 
-async def delete_sandbox(sandbox_id: str) -> bool:
-    """Delete a sandbox by its ID."""
-    logger.info(f"Deleting sandbox with ID: {sandbox_id}")
 
+async def delete_sandbox(sandbox_id: str) -> bool:
+    """Permanently delete a sandbox by ID."""
+    provider = _provider()
+    logger.info(f"[SANDBOX] Deleting sandbox: {sandbox_id}")
     try:
-        # Get the sandbox
-        sandbox = await daytona.get(sandbox_id)
-        
-        # Delete the sandbox
-        await daytona.delete(sandbox)
-        
-        logger.info(f"Successfully deleted sandbox {sandbox_id}")
+        sandbox = await provider.get(sandbox_id)
+        await provider.delete(sandbox)
+        logger.info(f"[SANDBOX] Deleted sandbox: {sandbox_id}")
         return True
-    except Exception as e:
-        logger.error(f"Error deleting sandbox {sandbox_id}: {str(e)}")
-        raise e
+    except Exception as exc:
+        logger.error(f"[SANDBOX] Error deleting {sandbox_id}: {exc}")
+        raise
+
+
+async def ping_sandbox(sandbox_id: str) -> bool:
+    """
+    Send a keepalive command to a running sandbox.
+    Returns True on success, False if the sandbox is not running.
+    """
+    provider = _provider()
+    try:
+        sandbox = await provider.get(sandbox_id)
+        state = await provider.get_state(sandbox)
+
+        if state != SandboxState.STARTED:
+            logger.debug(f"[SANDBOX] Ping skipped – {sandbox_id} is {state.value}")
+            return False
+
+        session_id = f"keepalive_{sandbox_id[:8]}"
+        await sandbox.process.create_session(session_id)
+
+        class _Req:
+            command = "echo keepalive"
+            var_async = False
+            cwd = None
+
+        await sandbox.process.execute_session_command(session_id, _Req())
+        return True
+    except Exception as exc:
+        logger.warning(f"[SANDBOX] Ping failed for {sandbox_id}: {exc}")
+        return False

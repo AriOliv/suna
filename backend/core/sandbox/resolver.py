@@ -1,9 +1,7 @@
-from typing import Optional, Tuple, Dict, Any
+from typing import Any, Optional, Tuple, Dict
 from dataclasses import dataclass
 import asyncio
 import time
-
-from daytona_sdk import AsyncSandbox
 
 from core.utils.logger import logger
 from core.sandbox.sandbox import get_or_start_sandbox, create_sandbox
@@ -13,7 +11,7 @@ from core.cache.runtime_cache import get_cached_project_metadata, set_cached_pro
 @dataclass
 class SandboxInfo:
     sandbox_id: str
-    sandbox: AsyncSandbox
+    sandbox: Any  # AsyncSandbox (Daytona) or DockerSandbox – both expose same interface
     password: str
     sandbox_url: Optional[str] = None
     vnc_preview: Optional[str] = None
@@ -226,7 +224,7 @@ class SandboxResolver:
             logger.error(f"[RESOLVER] Create failed for {project_id}: {e}")
             return None
     
-    async def _get_preview_links(self, sandbox: AsyncSandbox) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+    async def _get_preview_links(self, sandbox: Any) -> Tuple[Optional[str], Optional[str], Optional[str]]:
         try:
             vnc_link = await sandbox.get_preview_link(6080)
             website_link = await sandbox.get_preview_link(8080)
